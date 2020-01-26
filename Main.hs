@@ -8,7 +8,8 @@ import Graphics.UI.Gtk.Gdk.Events
 
 import Data.WAVE
 
-import Graphics.UI.SDL.Mixer
+import qualified SDL.Mixer as Mix
+import qualified SDL
 
 import Data.IORef
 import Data.List
@@ -16,8 +17,6 @@ import qualified Data.Map as Map
 
 {- TODOs
   - load file support
-  - select sample rate
-  - fix issue when samples have different lengths
 -}
 
 data State = State { bits :: Int, samples :: Int , sampleRate :: Int } deriving Show;
@@ -60,17 +59,20 @@ main = do
   _ <- onButtonPress quitButton (\_ -> do {_ <- widgetDestroy window; mainQuit ; return True })
   _ <- onKeyPress window (handleKey window)
 
-  openAudio defaultFrequency AudioS16Sys 1 16
+  -- openAudio defaultFrequency AudioS16Sys 1 16
+  SDL.initialize [SDL.InitAudio]
+--  Mix.initialize [Mix.InitWAV]
+  Mix.openAudio Mix.defaultAudio 16
   -- start main loop
   mainGUI
 
 soundStop :: IO Bool
 soundStop =
   do
-    haltChannel (-1)
+    Mix.halt Mix.AllChannels
     return True
 
-channelBoxNew :: String -> Int -> IORef [(Int,Int)] -> IORef State -> IO VBox
+channelBoxNew :: String -> Mix.Channel -> IORef [(Int,Int)] -> IORef State -> IO VBox
 channelBoxNew channelName channelNo boxes state =
   do
       channel <- drawingAreaNew
@@ -137,13 +139,18 @@ channelBoxNew channelName channelNo boxes state =
         updateDraw channel channelName state boxes
     doPlay =
       do
-        chunk <- loadWAV (channelName ++ ".wav")
-        _ <- volumeChunk chunk (maxVolume)
-        _ <- playChannel channelNo chunk (-1)
+        chunk <- Mix.load (channelName ++ ".wav")
+--        _ <- volumeChunk chunk (maxVolume)
+        _ <- Mix.playOn channelNo Mix.Forever chunk
+        _ <- case channelNo of {
+          0 -> Mix.effectPan channelNo 255 0 ;
+          _ -> Mix.effectPan channelNo 0 255
+          }
         return True
     doStop =
       do
-        haltChannel channelNo
+        -- haltChannel channelNo
+        Mix.halt channelNo
         return True
 
 configBoxNew :: IORef [(Int,Int)] -> IORef State -> DrawingArea -> String -> IO HBox

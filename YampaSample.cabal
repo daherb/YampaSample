@@ -24,6 +24,6 @@ executable YampaSample
                      , keera-hails-reactive-yampa, keera-hails-reactivevalues, keera-hails-reactive-gtk
                      , gtk
                      , WAVE
-                     , SDL, SDL-mixer
+                     , sdl2, sdl2-mixer
   -- hs-source-dirs:
   default-language:    Haskell2010
