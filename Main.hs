@@ -30,14 +30,15 @@ main = do
   boxes2 <- newIORef []
   state1 <- newIORef defaultState
   state2 <- newIORef defaultState
-
+  playing1 <- newIORef False
+  playing2 <- newIORef False
   _ <- initGUI
   window <- windowNew
   set window [windowTitle := "Text Entry", containerBorderWidth := 10]
   mainBox <- vBoxNew False 0
 
-  channelBox1 <- channelBoxNew "channel1" 0 boxes1 state1
-  channelBox2 <- channelBoxNew "channel2" 1 boxes2 state2
+  channelBox1 <- channelBoxNew "channel1" 0 boxes1 state1 playing1
+  channelBox2 <- channelBoxNew "channel2" 1 boxes2 state2 playing2
 
   buttonBox <- hBoxNew False 0
 
@@ -54,9 +55,9 @@ main = do
   containerAdd window mainBox
   widgetShowAll window
   
-  objectDestroyReactive window              =:> mainQuit
-  _ <- onButtonPress stopButton (\_ -> soundStop)
-  _ <- onButtonPress quitButton (\_ -> do {_ <- widgetDestroy window; mainQuit ; return True })
+  objectDestroyReactive window              =:> do { _ <- soundStop ; mainQuit }
+  _ <- onButtonPress stopButton (\_ -> do { writeIORef playing1 False; writeIORef playing2 False ; soundStop })
+  _ <- onButtonPress quitButton (\_ -> do {_ <- widgetDestroy window; _ <- soundStop ; mainQuit ; return True })
   _ <- onKeyPress window (handleKey window)
 
   -- openAudio defaultFrequency AudioS16Sys 1 16
@@ -72,8 +73,8 @@ soundStop =
     Mix.halt Mix.AllChannels
     return True
 
-channelBoxNew :: String -> Mix.Channel -> IORef [(Int,Int)] -> IORef State -> IO VBox
-channelBoxNew channelName channelNo boxes state =
+channelBoxNew :: String -> Mix.Channel -> IORef [(Int,Int)] -> IORef State -> IORef Bool -> IO VBox
+channelBoxNew channelName channelNo boxes state playing =
   do
       channel <- drawingAreaNew
       channelBox <- vBoxNew False 0
@@ -84,7 +85,7 @@ channelBoxNew channelName channelNo boxes state =
       channelClear <- buttonNewWithLabel "Clear"
       channelPlay <- buttonNewWithLabel "Play"
       channelStop <- buttonNewWithLabel "Stop"
-      configBox <- configBoxNew boxes state channel channelName
+      configBox <- configBoxNew channel channelName channelNo state boxes playing 
       
       boxPackStart channelBox channelHBox PackGrow 0
       boxPackStart channelBox configBox PackNatural 0
@@ -99,14 +100,14 @@ channelBoxNew channelName channelNo boxes state =
       _ <- onButtonPress channelSave (doSave)
       _ <- onButtonPress channelLoad (doLoad channel)
       _ <- onButtonPress channelClear (doClear channel)
-      _ <- onButtonPress channelPlay (\_ -> doPlay)
+      _ <- onButtonPress channelPlay (\_ -> do { writeIORef playing True ; doPlay channelName channelNo})
       _ <- onButtonPress channelStop (\_ -> doStop)
       
       
-      _ <- onRealize channel (updateDraw channel channelName state boxes >>= \_ -> return ())
-      _ <- afterExpose channel (\_ -> do { _ <- updateDraw channel channelName state boxes ; return True })
-      _ <- afterConfigure channel (\_ -> do { _ <- updateDraw channel channelName state boxes ; return True })
-      _ <- onButtonPress channel (\e -> do {_ <- handleClick e channel state boxes ; _ <- updateDraw channel channelName state boxes ; return True })
+      _ <- onRealize channel (updateDraw channel channelName channelNo state boxes playing >>= \_ -> return ())
+      _ <- afterExpose channel (\_ -> do { _ <- updateDraw channel channelName channelNo state boxes playing ; return True })
+      _ <- afterConfigure channel (\_ -> do { _ <- updateDraw channel channelName channelNo state boxes playing ; return True })
+      _ <- onButtonPress channel (\e -> do {_ <- handleClick e channel state boxes ; _ <- updateDraw channel channelName channelNo state boxes playing ; return True })
       return channelBox
   where
     doSave _ =
@@ -119,7 +120,6 @@ channelBoxNew channelName channelNo boxes state =
           Just f -> saveWav state boxes f ;
           _ -> return False
         }
-
     doLoad channel _ =
       do
         chooser <- fileChooserDialogNew Nothing Nothing FileChooserActionOpen [("Save",ResponseAccept),("Cancel",ResponseCancel)]
@@ -129,32 +129,35 @@ channelBoxNew channelName channelNo boxes state =
         case fp of {
           Just f -> (do
                         _ <- loadWav state boxes f
-                        updateDraw channel channelName state boxes
+                        updateDraw channel channelName channelNo state boxes playing
                     );
           _ -> return False
         }
     doClear channel _ =
       do
         writeIORef boxes []
-        updateDraw channel channelName state boxes
-    doPlay =
-      do
-        chunk <- Mix.load (channelName ++ ".wav")
---        _ <- volumeChunk chunk (maxVolume)
-        _ <- Mix.playOn channelNo Mix.Forever chunk
-        _ <- case channelNo of {
-          0 -> Mix.effectPan channelNo 255 0 ;
-          _ -> Mix.effectPan channelNo 0 255
-          }
-        return True
+        updateDraw channel channelName channelNo state boxes playing
     doStop =
       do
+        writeIORef playing False
         -- haltChannel channelNo
         Mix.halt channelNo
         return True
 
-configBoxNew :: IORef [(Int,Int)] -> IORef State -> DrawingArea -> String -> IO HBox
-configBoxNew boxesRef stateRef channel channelName =
+doPlay :: [Char] -> Mix.Channel -> IO Bool
+doPlay channelName channelNo =
+  do
+    chunk <- Mix.load (channelName ++ ".wav")
+  --        _ <- volumeChunk chunk (maxVolume)
+    _ <- Mix.playOn channelNo Mix.Forever chunk
+    _ <- case channelNo of {
+      0 -> Mix.effectPan channelNo 255 0 ;
+      _ -> Mix.effectPan channelNo 0 255
+      }
+    return True
+
+configBoxNew :: DrawingArea -> String -> Mix.Channel -> IORef State -> IORef [(Int,Int)] -> IORef Bool -> IO HBox
+configBoxNew channel channelName channelNo stateRef boxesRef playingRef  =
   do
     (State sBits sSteps sSamples) <- readIORef stateRef
     configBox <- hBoxNew False 0
@@ -173,7 +176,7 @@ configBoxNew boxesRef stateRef channel channelName =
   
     samplesBox <- vBoxNew False 0
     samplesLabel <- labelNew (Just "Sample rate")
-    samplesScale <- hScaleNewWithRange 8000 44000 4000
+    samplesScale <- hScaleNewWithRange 2400 44000 4000
     rangeSetValue samplesScale (fromIntegral sSamples)
     boxPackStart samplesBox samplesLabel PackNatural 0
     boxPackStart samplesBox samplesScale PackNatural 0
@@ -201,13 +204,14 @@ configBoxNew boxesRef stateRef channel channelName =
           2 -> writeIORef stateRef (State sBits sSteps (round val)) ;
           _ -> return ()
           }
-        _ <- updateDraw channel channelName stateRef boxesRef
+        _ <- updateDraw channel channelName channelNo stateRef boxesRef playingRef
         return ()
 
 handleKey :: Window -> Event -> IO Bool
 handleKey window (Key _ _ _ _ _ _ _ _ _ (Just 'q')) =
   do
     widgetDestroy window
+    _ <- soundStop
     mainQuit
     return True
 handleKey _ _ = return False
@@ -228,11 +232,12 @@ handleClick (Button _ _ _ x y _ LeftButton _ _) draw stateRef boxes =
     return True
 handleClick _ _ _ _ = return False
 
-updateDraw :: WidgetClass widget => widget -> String -> IORef State ->IORef [(Int,Int)] -> IO Bool
-updateDraw draw name stateRef boxesRef =
+updateDraw :: WidgetClass widget => widget -> String -> Mix.Channel -> IORef State ->IORef [(Int,Int)] -> IORef Bool -> IO Bool
+updateDraw draw channelName channelNo stateRef boxesRef playingRef =
   do
     (State sBits sSteps _) <- readIORef stateRef
     boxes <- readIORef boxesRef
+    channelPlaying <- readIORef playingRef
     dWindow <- widgetGetDrawWindow draw
     (maxX,maxY) <- drawableGetSize dWindow
     let deltaX = maxX `div` sSteps
@@ -253,7 +258,11 @@ updateDraw draw name stateRef boxesRef =
       else return ()
     sequence_ [drawRectangle dWindow context True (x*deltaX+2) (y*deltaY+2) (deltaX-4) (deltaY-4) | (x,y) <- boxes, x < sSteps, y < sBits]
     drawWindowEndPaint dWindow
-    saveWav stateRef boxesRef (name ++ ".wav")
+    _ <- saveWav stateRef boxesRef (channelName ++ ".wav")
+    if channelPlaying then
+      doPlay channelName channelNo
+      else
+      return True
 
 
 saveWav :: IORef State -> IORef [(Int,Int)] -> FilePath -> IO Bool
